@@ -1,19 +1,27 @@
 
-import React, { useState, useEffect } from 'react';
-import { Grade, Topic, Lesson, Subject } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Grade, Topic, Lesson, Subject, Profile, ThemeConfig } from './types';
 import { Icons } from './constants';
 import { dataService } from './services/dataService';
-import GradeSelection from './components/GradeSelection';
-import AITutor from './components/AITutor';
 import AdminDashboard from './components/AdminDashboard';
+import TeacherDashboard from './components/TeacherDashboard';
+import Auth from './components/Auth';
+import BooksView from './components/BooksView';
+import ProjectsView from './components/ProjectsView';
+import ThemeSettings from './components/ThemeSettings';
+import FlashcardsView from './components/FlashcardsView';
 
-type ViewState = 'grades' | 'subjects' | 'topics' | 'lesson' | 'admin';
-type UserRole = 'student' | 'admin';
+type ViewState = 'grades' | 'subjects' | 'topics' | 'lesson' | 'admin' | 'teacher' | 'ebooks' | 'audiobooks' | 'theme' | 'projects' | 'cards';
 
-const ADMIN_PASSWORD = "admin123";
+const DEFAULT_THEME: ThemeConfig = {
+  mode: 'light',
+  primary: '#4f46e5',
+  secondary: '#6366f1',
+  accent: '#10b981'
+};
 
 const App: React.FC = () => {
-  const [role, setRole] = useState<UserRole>('student');
+  const [user, setUser] = useState<Profile | null>(null);
   const [currentView, setCurrentView] = useState<ViewState>('grades');
   const [selectedGrade, setSelectedGrade] = useState<Grade | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
@@ -24,22 +32,78 @@ const App: React.FC = () => {
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Theme State
+  const [theme, setTheme] = useState<ThemeConfig>(() => {
+    const saved = localStorage.getItem('cbc_theme');
+    return saved ? JSON.parse(saved) : DEFAULT_THEME;
+  });
+
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<Record<string, { correct: boolean; message: string; explanation?: string }>>({});
-  const [isTutorOpen, setIsTutorOpen] = useState(false);
 
-  // Admin Auth State
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authPassword, setAuthPassword] = useState('');
-  const [authError, setAuthError] = useState(false);
+  // Menu Dropdown State
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  // Fetch subjects for grade
+  // Apply Theme to Document
   useEffect(() => {
-    if (selectedGrade && currentView === 'subjects') {
+    const root = document.documentElement;
+    root.setAttribute('data-theme', theme.mode);
+    root.style.setProperty('--primary', theme.primary);
+    root.style.setProperty('--secondary', theme.secondary);
+    root.style.setProperty('--accent', theme.accent);
+    localStorage.setItem('cbc_theme', JSON.stringify(theme));
+  }, [theme]);
+
+  // Persistence: Load user and redirect based on role
+  useEffect(() => {
+    const savedUser = localStorage.getItem('cbc_user');
+    if (savedUser) {
+      const parsedUser = JSON.parse(savedUser);
+      setUser(parsedUser);
+      
+      // Auto-redirect based on role
+      if (parsedUser.role === 'admin') setCurrentView('admin');
+      else if (parsedUser.role === 'teacher') setCurrentView('teacher');
+      else setCurrentView('grades');
+    }
+  }, []);
+
+  // Handle clicks outside menu to close
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleAuthSuccess = (profile: Profile) => {
+    setUser(profile);
+    localStorage.setItem('cbc_user', JSON.stringify(profile));
+    
+    // Redirect logic immediately after auth
+    if (profile.role === 'admin') setCurrentView('admin');
+    else if (profile.role === 'teacher') setCurrentView('teacher');
+    else setCurrentView('grades');
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    localStorage.removeItem('cbc_user');
+    setCurrentView('grades');
+    setIsMenuOpen(false);
+  };
+
+  // Fetch subjects for the platform
+  useEffect(() => {
+    if (currentView === 'subjects' || currentView === 'grades') {
       const fetchSubjects = async () => {
         setIsLoading(true);
         try {
-          const data = await dataService.getSubjectsByGrade(selectedGrade);
+          const data = await dataService.getAllSubjects();
           setSubjects(data);
         } catch (err) {
           console.error(err);
@@ -49,7 +113,7 @@ const App: React.FC = () => {
       };
       fetchSubjects();
     }
-  }, [selectedGrade, currentView]);
+  }, [currentView]);
 
   // Fetch topics for grade + subject
   useEffect(() => {
@@ -95,39 +159,10 @@ const App: React.FC = () => {
     }
   };
 
-  const handleBack = () => {
-    if (currentView === 'lesson') setCurrentView('topics');
-    else if (currentView === 'topics') setCurrentView('subjects');
-    else if (currentView === 'subjects') setCurrentView('grades');
-    else if (currentView === 'admin') setCurrentView('grades');
-  };
-
-  const handleAdminToggle = () => {
-    if (role === 'admin') {
-      setRole('student');
-      setCurrentView('grades');
-    } else {
-      setShowAuthModal(true);
-    }
-  };
-
-  const handleAuthSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (authPassword === ADMIN_PASSWORD) {
-      setRole('admin');
-      setCurrentView('admin');
-      setShowAuthModal(false);
-      setAuthPassword('');
-      setAuthError(false);
-    } else {
-      setAuthError(true);
-      setAuthPassword('');
-    }
-  };
-
-  const checkAnswer = (lesson: Lesson) => {
+  const checkAnswer = async (lesson: Lesson) => {
     const input = userAnswers[lesson.id]?.trim().toLowerCase();
     const isCorrect = input === lesson.correct_answer?.toLowerCase();
+    
     setFeedback(prev => ({
       ...prev,
       [lesson.id]: {
@@ -138,220 +173,175 @@ const App: React.FC = () => {
     }));
   };
 
-  return (
-    <div className={`min-h-screen flex flex-col transition-colors duration-500 ${role === 'admin' ? 'bg-slate-50' : 'bg-[#fdfcf9]'}`}>
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => { if(role !== 'admin') setCurrentView('grades'); }}>
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-md transition-all ${role === 'admin' ? 'bg-emerald-600' : 'math-gradient'}`}>
-              <span className="font-bold text-lg">{role === 'admin' ? 'A' : 'M+'}</span>
-            </div>
-            <h1 className="font-bold text-xl text-slate-900 hidden sm:block">
-              MathMaster {role === 'admin' ? <span className="text-emerald-600">Admin</span> : <span className="text-indigo-600">AI</span>}
-            </h1>
-          </div>
+  if (!user) {
+    return <Auth onAuthSuccess={handleAuthSuccess} />;
+  }
 
-          <div className="flex items-center gap-2 sm:gap-4">
+  return (
+    <div className="min-h-screen theme-text-main pb-10 transition-colors duration-300">
+      <header className="theme-bg-surface border-b border-slate-300/20 py-4 px-4 shadow-sm sticky top-0 z-40 transition-colors">
+        <div className="max-w-[1000px] mx-auto flex flex-row justify-between items-center gap-2">
+          <h1 
+            className="text-xl sm:text-2xl md:text-3xl font-black theme-text-main cursor-pointer hover:opacity-80 transition truncate mr-2"
+            onClick={() => {
+              if (user.role === 'admin') setCurrentView('admin');
+              else if (user.role === 'teacher') setCurrentView('teacher');
+              else setCurrentView('grades');
+            }}
+          >
+            CBC Portal
+          </h1>
+          
+          <div className="flex items-center gap-1 relative" ref={menuRef}>
             <button 
-              onClick={handleAdminToggle}
-              className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest border-2 transition-all ${
-                role === 'admin' ? 'border-emerald-600 text-emerald-600 bg-emerald-50' : 'border-slate-200 text-slate-400 hover:border-indigo-600'
-              }`}
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className="flex items-center gap-3 px-3 py-2 bg-slate-800 text-white rounded-full font-bold transition hover:bg-slate-700 active:scale-95 shadow-md"
+              style={{ backgroundColor: theme.mode === 'dark' ? 'var(--primary)' : '#1e293b' }}
             >
-              {role === 'admin' ? 'Exit Admin' : 'Admin'}
+              <Icons.Menu />
+              <div className="w-6 h-6 theme-bg-surface rounded-full flex items-center justify-center theme-text-primary text-[10px] flex-shrink-0 shadow-inner font-black">
+                {user.username.charAt(0).toUpperCase()}
+              </div>
             </button>
 
-            {currentView !== 'grades' && currentView !== 'admin' && (
-              <button onClick={handleBack} className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition">
-                <Icons.Back />
-                <span className="hidden sm:inline">Back</span>
-              </button>
-            )}
-            
-            {selectedTopic && currentView === 'lesson' && (
-              <button onClick={() => setIsTutorOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-full text-sm font-semibold hover:bg-indigo-700 transition shadow-lg">
-                <Icons.Tutor />
-                <span>Ask AI</span>
-              </button>
+            {isMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 w-64 theme-bg-surface rounded-2xl shadow-2xl border border-slate-200/20 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="p-4 bg-slate-50/5 border-b border-slate-200/10">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{user.role} Account</p>
+                  <p className="font-black theme-text-main truncate">{user.username}</p>
+                </div>
+                
+                <div className="py-2">
+                  <button onClick={() => { setCurrentView('grades'); setIsMenuOpen(false); }} className="w-full px-6 py-3 text-left hover:bg-slate-500/5 flex items-center gap-3 text-sm font-bold theme-text-main">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-100/10 text-indigo-500 flex items-center justify-center"><Icons.Tutor /></div>
+                    Curriculum
+                  </button>
+
+                  {user.role === 'admin' && (
+                    <button onClick={() => { setCurrentView('admin'); setIsMenuOpen(false); }} className="w-full px-6 py-3 text-left hover:bg-slate-500/5 flex items-center gap-3 text-sm font-bold theme-text-main">
+                      <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center">⚙️</div>
+                      Admin Panel
+                    </button>
+                  )}
+
+                  {user.role === 'teacher' && (
+                    <button onClick={() => { setCurrentView('teacher'); setIsMenuOpen(false); }} className="w-full px-6 py-3 text-left hover:bg-slate-500/5 flex items-center gap-3 text-sm font-bold theme-text-main">
+                      <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center">👨‍🏫</div>
+                      Management
+                    </button>
+                  )}
+
+                  <button onClick={() => { setCurrentView('theme'); setIsMenuOpen(false); }} className="w-full px-6 py-3 text-left hover:bg-slate-500/5 flex items-center gap-3 text-sm font-bold theme-text-main">
+                    <div className="w-8 h-8 rounded-lg bg-pink-100 text-pink-500 flex items-center justify-center">🎨</div>
+                    Appearance
+                  </button>
+                </div>
+
+                <div className="p-4 bg-red-50/5">
+                  <button onClick={handleLogout} className="w-full py-2 bg-red-600 text-white rounded-lg font-black text-xs uppercase tracking-widest hover:bg-red-700 transition">Logout</button>
+                </div>
+              </div>
             )}
           </div>
         </div>
       </header>
 
-      <main className="flex-1 overflow-x-hidden">
-        {currentView === 'admin' && role === 'admin' && <AdminDashboard />}
-
-        {currentView === 'grades' && <GradeSelection onSelect={handleGradeSelect} />}
+      <main className="max-w-[1000px] mx-auto px-4 sm:px-6 py-4 sm:py-8">
+        {currentView === 'theme' && <div className="theme-bg-surface p-10 rounded-xl shadow-md border theme-border"><ThemeSettings currentTheme={theme} onThemeChange={setTheme} /></div>}
+        {currentView === 'admin' && <div className="theme-bg-surface p-10 rounded-xl shadow-md border theme-border"><AdminDashboard user={user} /></div>}
+        {currentView === 'teacher' && <div className="theme-bg-surface p-10 rounded-xl shadow-md border theme-border"><TeacherDashboard user={user} /></div>}
+        
+        {currentView === 'grades' && (
+          <div className="theme-bg-surface p-5 sm:p-10 rounded-xl shadow-md border theme-border">
+            <h2 className="text-2xl font-black mb-8 theme-text-main border-l-4 border-indigo-600 pl-4">Curriculum Explorer</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((g) => (
+                <button key={g} onClick={() => handleGradeSelect(g as Grade)} className="group p-6 border-2 theme-border theme-bg-surface rounded-xl hover:shadow-lg transition-all text-center relative overflow-hidden active:scale-95">
+                  <div className="text-3xl font-black theme-text-main absolute -right-2 -bottom-2 opacity-5">G{g}</div>
+                  <div className="relative z-10">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Standard</div>
+                    <div className="text-xl font-black theme-text-main">Grade {g}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {currentView === 'subjects' && selectedGrade && (
-          <div className="max-w-4xl mx-auto px-4 py-12">
-            <h2 className="text-3xl font-bold text-slate-900 mb-8">Grade {selectedGrade} Subjects</h2>
-            {isLoading ? <div className="flex justify-center"><div className="loader"></div></div> : (
+          <div className="theme-bg-surface p-5 sm:p-10 rounded-xl shadow-md border theme-border">
+            <div className="flex items-center gap-4 mb-8">
+               <button onClick={() => setCurrentView('grades')} className="p-2 hover:bg-slate-500/10 rounded-full transition theme-text-main"><Icons.Back /></button>
+               <h2 className="text-2xl font-black theme-text-main">Grade {selectedGrade} Subjects</h2>
+            </div>
+            {isLoading ? <p className="text-slate-500 italic">Loading subjects...</p> : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {subjects.map(sub => (
-                  <button key={sub.id} onClick={() => handleSubjectSelect(sub)} className="p-6 bg-white border border-slate-200 rounded-2xl hover:border-indigo-500 hover:shadow-md transition text-left group">
-                    <span className="text-xs font-bold text-indigo-500 uppercase">{sub.code || 'SUB'}</span>
-                    <h3 className="text-xl font-bold text-slate-800 group-hover:text-indigo-600 transition">{sub.name}</h3>
-                  </button>
+                  <div key={sub.id} onClick={() => handleSubjectSelect(sub)} className="p-6 border-2 theme-border rounded-xl bg-slate-50/5 cursor-pointer hover:bg-slate-500/10 hover:shadow-md transition-all flex justify-between items-center group active:scale-95">
+                    <span className="text-lg font-bold theme-text-main">{sub.name}</span>
+                    <Icons.ChevronRight />
+                  </div>
                 ))}
-                {subjects.length === 0 && <p className="text-slate-500">No subjects found for this grade yet.</p>}
               </div>
             )}
           </div>
         )}
 
         {currentView === 'topics' && selectedGrade && selectedSubject && (
-          <div className="max-w-4xl mx-auto px-4 py-12">
-            <header className="mb-8">
-              <span className="text-indigo-600 font-bold uppercase text-xs tracking-widest">Grade {selectedGrade} &bull; {selectedSubject.name}</span>
-              <h2 className="text-3xl font-bold text-slate-900 mt-1">Available Topics</h2>
-            </header>
-            {isLoading ? <div className="flex justify-center"><div className="loader"></div></div> : (
-              <div className="grid gap-4">
-                {topics.map(topic => (
-                  <button key={topic.id} onClick={() => handleTopicSelect(topic)} className="flex items-center justify-between p-6 bg-white border border-slate-200 rounded-2xl hover:border-indigo-500 hover:shadow-md transition text-left group">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-500">{topic.order_number}</div>
-                      <h3 className="text-lg font-bold text-slate-800">{topic.title}</h3>
-                    </div>
-                    <div className="rotate-180"><Icons.Back /></div>
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="theme-bg-surface p-5 sm:p-10 rounded-xl shadow-md border theme-border">
+            <div className="flex items-center gap-4 mb-8">
+               <button onClick={() => setCurrentView('subjects')} className="p-2 hover:bg-slate-500/10 rounded-full transition theme-text-main"><Icons.Back /></button>
+               <h2 className="text-2xl font-black theme-text-main">Learning Topics</h2>
+            </div>
+            <div className="space-y-3">
+              {topics.map(topic => (
+                <div key={topic.id} onClick={() => handleTopicSelect(topic)} className="p-5 border theme-border rounded-xl bg-slate-50/5 cursor-pointer hover:bg-slate-500/10 hover:shadow-md transition-all flex justify-between items-center group active:scale-95">
+                  <span className="text-lg font-bold theme-text-main">{topic.title}</span>
+                  <Icons.ChevronRight />
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         {currentView === 'lesson' && selectedTopic && (
-          <div className="max-w-3xl mx-auto px-4 py-12">
-            {isLoading ? <div className="flex justify-center"><div className="loader"></div></div> : (
-              <>
-                <header className="mb-10 text-center">
-                   <h2 className="text-3xl font-black text-slate-900">{selectedTopic.title}</h2>
-                   <p className="text-slate-500 mt-2">Study the material and test your knowledge</p>
-                </header>
-                <div className="space-y-8">
-                  {lessons.map((lesson) => (
-                    <div key={lesson.id} className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm animate-in fade-in slide-in-from-bottom-2">
-                      {lesson.type === 'explanation' ? (
-                        <p className="text-lg text-slate-700 leading-relaxed whitespace-pre-wrap">{lesson.content}</p>
-                      ) : (
-                        <div className="space-y-6">
-                          <div className="flex items-start gap-4">
-                            <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-white shrink-0 font-bold">?</div>
-                            <p className="text-lg font-semibold text-slate-800">{lesson.content}</p>
-                          </div>
-                          
-                          {lesson.question_type === 'mcq' ? (
-                            <div className="grid gap-2 pl-12">
-                              {JSON.parse(lesson.options || '[]').map((opt: string, i: number) => (
-                                <button 
-                                  key={i}
-                                  onClick={() => setUserAnswers(p => ({...p, [lesson.id]: opt}))}
-                                  className={`p-4 rounded-xl border-2 text-left font-medium transition ${
-                                    userAnswers[lesson.id] === opt ? 'border-indigo-600 bg-indigo-50' : 'border-slate-100 hover:border-slate-300'
-                                  }`}
-                                >
-                                  {opt}
-                                </button>
-                              ))}
-                              <button 
-                                onClick={() => checkAnswer(lesson)}
-                                className="mt-2 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition"
-                              >
-                                Submit Answer
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="pl-12 flex gap-3">
-                              <input 
-                                type="text"
-                                value={userAnswers[lesson.id] || ''}
-                                onChange={(e) => setUserAnswers(p => ({...p, [lesson.id]: e.target.value}))}
-                                className="flex-1 px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-indigo-500 focus:bg-white transition-all outline-none"
-                                placeholder="Type answer here..."
-                              />
-                              <button onClick={() => checkAnswer(lesson)} className="px-6 py-3 bg-slate-900 text-white font-bold rounded-xl">Check</button>
-                            </div>
-                          )}
+          <div className="theme-bg-surface p-10 rounded-xl shadow-md border theme-border">
+            <div className="flex items-center gap-4 mb-8 border-b border-slate-200/10 pb-6">
+              <button onClick={() => setCurrentView('topics')} className="p-2 hover:bg-slate-500/10 rounded-full transition theme-text-main"><Icons.Back /></button>
+              <h2 className="text-3xl font-black theme-text-main">{selectedTopic.title}</h2>
+            </div>
 
-                          {feedback[lesson.id] && (
-                            <div className={`ml-12 p-4 rounded-2xl animate-in slide-in-from-top-2 ${
-                              feedback[lesson.id].correct ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
-                            }`}>
-                              <p className="font-bold">{feedback[lesson.id].message}</p>
-                              {feedback[lesson.id].explanation && (
-                                <p className="mt-2 text-sm opacity-90 border-t border-black/5 pt-2 italic">{feedback[lesson.id].explanation}</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
+            <div className="space-y-8">
+              {lessons.map((lesson, idx) => (
+                <div key={lesson.id} className="relative pl-6 border-l-2 theme-border last:border-0 pb-12">
+                  <div className={`text-[10px] font-black uppercase tracking-widest mb-4 px-3 py-1 rounded-full inline-block ${lesson.type === 'assignment' ? 'bg-orange-100 text-orange-600' : lesson.type === 'note' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
+                    {lesson.type}
+                  </div>
+                  
+                  <div className="text-xl leading-relaxed theme-text-main bg-slate-500/5 p-8 rounded-2xl border theme-border whitespace-pre-wrap">
+                    {lesson.content}
+                    {lesson.due_date && <div className="mt-4 pt-4 border-t border-slate-200 text-sm font-black text-orange-600">Due Date: {lesson.due_date}</div>}
+                  </div>
+
+                  {lesson.type === 'question' && (
+                    <div className="mt-6 space-y-4">
+                      <input 
+                        type="text"
+                        value={userAnswers[lesson.id] || ''}
+                        onChange={(e) => setUserAnswers(p => ({...p, [lesson.id]: e.target.value}))}
+                        className="w-full px-5 py-4 border-2 theme-border rounded-xl outline-none focus:border-indigo-600 font-bold"
+                        placeholder="Type answer here..."
+                      />
+                      <button onClick={() => checkAnswer(lesson)} className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black hover:bg-indigo-700 transition shadow-lg">Submit</button>
+                      {feedback[lesson.id] && <div className={`mt-4 p-4 rounded-xl font-bold ${feedback[lesson.id].correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{feedback[lesson.id].message}</div>}
                     </div>
-                  ))}
+                  )}
                 </div>
-              </>
-            )}
+              ))}
+            </div>
           </div>
         )}
       </main>
-
-      {/* Admin Auth Modal */}
-      {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="bg-emerald-600 p-6 text-white text-center">
-              <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-bold">Admin Authentication</h2>
-              <p className="text-emerald-100 text-sm">Enter password to manage curriculum</p>
-            </div>
-            <form onSubmit={handleAuthSubmit} className="p-6 space-y-4">
-              <div>
-                <input
-                  autoFocus
-                  type="password"
-                  value={authPassword}
-                  onChange={(e) => { setAuthPassword(e.target.value); setAuthError(false); }}
-                  placeholder="Password"
-                  className={`w-full px-4 py-3 rounded-xl border-2 outline-none transition-all ${
-                    authError ? 'border-rose-300 bg-rose-50' : 'border-slate-100 focus:border-emerald-500'
-                  }`}
-                />
-                {authError && <p className="text-rose-600 text-xs mt-1 font-medium">Incorrect password. Please try again.</p>}
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  type="button" 
-                  onClick={() => { setShowAuthModal(false); setAuthPassword(''); setAuthError(false); }}
-                  className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition"
-                >
-                  Cancel
-                </button>
-                <button 
-                  type="submit"
-                  className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition"
-                >
-                  Confirm
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {isTutorOpen && selectedTopic && (
-        <AITutor 
-          grade={selectedGrade as Grade}
-          topic={selectedTopic.title}
-          isOpen={isTutorOpen}
-          onClose={() => setIsTutorOpen(false)}
-          currentLessonContent={lessons.map(l => l.content).join('\n')}
-        />
-      )}
     </div>
   );
 };

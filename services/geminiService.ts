@@ -1,15 +1,13 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { ChatMessage } from '../types';
 
-// Updated initialization according to guidelines
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const getTutorResponse = async (
   history: ChatMessage[],
   context: { grade: number; topic: string; lessonContent?: string }
 ) => {
-  // Using gemini-3-pro-preview for complex reasoning tasks like math tutoring
   const model = 'gemini-3-pro-preview';
   
   const systemInstruction = `
@@ -40,11 +38,52 @@ export const getTutorResponse = async (
         temperature: 0.7,
       }
     });
-    
-    // Using .text property directly as per guidelines
     return response.text;
   } catch (error) {
     console.error("Gemini Error:", error);
     return "I'm sorry, I'm having a little trouble thinking right now. Can we try that again?";
+  }
+};
+
+export const generateBulkContent = async (prompt: string, grade: number) => {
+  const model = 'gemini-3-pro-preview';
+  
+  const response = await ai.models.generateContent({
+    model,
+    contents: `Generate a detailed lesson plan for Grade ${grade} based on this request: ${prompt}. 
+               Provide a single Topic title and at least 3 distinct Lessons for that topic.
+               Include both explanations and questions (MCQ and text input).`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          topicTitle: { type: Type.STRING },
+          lessons: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, description: "Must be 'explanation' or 'question'" },
+                content: { type: Type.STRING },
+                question_type: { type: Type.STRING, description: "Only for type 'question'. Must be 'input' or 'mcq'" },
+                options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Only for 'mcq'" },
+                correct_answer: { type: Type.STRING },
+                explanation: { type: Type.STRING, description: "Feedback for the student" }
+              },
+              required: ["type", "content"]
+            }
+          }
+        },
+        required: ["topicTitle", "lessons"]
+      }
+    }
+  });
+
+  try {
+    return JSON.parse(response.text || '{}');
+  } catch (e) {
+    console.error("Failed to parse AI bulk response", e);
+    throw new Error("The AI returned a malformed response. Please try again.");
   }
 };
